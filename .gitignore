@@ -1,5 +1,7 @@
-build
-gem5_build
+# --- 原本 Gem5 預設的規則 (保留這些) ---
+build/
+build_opts/
+gem5_build/
 parser.out
 parsetab.py
 cscope.files
@@ -8,7 +10,7 @@ cscope.out
 *~
 .*.swp
 .*.swo
-m5out
+m5out/
 /src/doxygen/html
 /docs/_build
 /ext/dramsim2/DRAMSim2
@@ -32,7 +34,34 @@ m5out
 /system/arm/bootloader/arm64/boot_v2.arm64
 configs/example/memcheck.cfg
 configs/dram/lowp_sweep.cfg
-.pyenv
-.vscode
-typings
+
+# --- [關鍵新增] Full System 模擬資源保護 ---
+# 絕對不要上傳這些，它們太大了
+*.img
+*.iso
+*.qcow2
+vmlinux*
+system.map*
+lost+found/
+*.txt
+
+# --- [關鍵新增] 您的資源資料夾 ---
+# 根據我們之前的討論，您可能會建立這些資料夾
+gem5_resources/
+resources/
+system_files/
+disks/
+
+# --- [關鍵新增] Python 與 環境雜項 ---
+__pycache__/
+.venv/
+venv/
+.env
+.vscode/
+.idea/
 .DS_Store
+
+# --- [關鍵新增] 您的 Racetrack 實驗暫存檔 ---
+# 如果您有寫一些測試用的小 binary，不想上傳
+test_binaries/
+*.log

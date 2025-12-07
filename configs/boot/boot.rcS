@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# 印出訊息讓我們知道開機好了
+echo "Reading current kernel config..."
+uname -a
+
+# [關鍵動作] 告訴 Gem5 Host 端：現在建立 Checkpoint！
+echo "Triggering checkpoint..."
+/sbin/m5 checkpoint
+
+# 存檔完成後，讓虛擬機稍微休息一下再結束
+echo "Checkpoint done. Exiting..."
+sleep 1
+/sbin/m5 exit

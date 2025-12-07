@@ -43,8 +43,11 @@ SimObject('Cache.py', sim_objects=[
     'WriteAllocator', 'BaseCache', 'Cache', 'NoncoherentCache'],
     enums=['Clusivity'])
 
+SimObject('RacetrackCache.py', sim_objects=['RacetrackCache'])
+
 Source('base.cc')
 Source('cache.cc')
+Source('racetrack_cache.cc')
 Source('cache_blk.cc')
 Source('mshr.cc')
 Source('mshr_queue.cc')

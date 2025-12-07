@@ -52,7 +52,6 @@ from gem5.resources.resource import obtain_resource
 from gem5.simulate.exit_event import ExitEvent
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
-
 # This runs a check to ensure the gem5 binary is compiled to X86 and to the
 # MESI Two Level coherence protocol.
 requires(
@@ -101,10 +100,21 @@ board = X86Board(
 )
 
 
-workload = obtain_resource("x86-ubuntu-24.04-boot-with-systemd")
-board.set_workload(workload)
-
-
+#workload = obtain_resource("x86-ubuntu-24.04-boot-with-systemd")
+#board.set_workload(workload)
+# 加入下面這行，強制核心不要用 mwait令
+#kernel_args=["earlyprintk=ttyS0", "console=ttyS0", "lpj=7999923", "root=/dev/sda2", "idle=poll"]
+board.set_kernel_disk_workload(
+    kernel=obtain_resource("x86-linux-kernel-6.8.0-52-generic"),
+    disk_image=obtain_resource("x86-ubuntu-24.04-img"),
+    kernel_args=[
+        "earlyprintk=ttyS0",
+        "console=ttyS0",
+        "lpj=7999923",
+        "root=/dev/sda2",
+        "idle=poll"
+    ]
+)
 def exit_event_handler():
     print("First exit: kernel booted")
     yield False  # gem5 is now executing systemd startup
