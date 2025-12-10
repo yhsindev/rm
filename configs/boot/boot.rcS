@@ -1,14 +1,35 @@
 #!/bin/bash
+# 1. 初始化環境
+# 確保你切換到正確的資料夾 (請依照你下載的 disk image 實際結構修改)
+cd /home/usr/rm/gem5_resources/parsec.img
+export OMP_NUM_THREADS=4  # 論文中使用 4-core CMP [cite: 299]，設定執行緒數很重要
 
-# 印出訊息讓我們知道開機好了
-echo "Reading current kernel config..."
-uname -a
-
-# [關鍵動作] 告訴 Gem5 Host 端：現在建立 Checkpoint！
-echo "Triggering checkpoint..."
+# 2. 檢查點 (Checkpoint)
+# 這裡對應論文的 ：
+# "VM based simulation acceleration... Once reached, a checkpoint is taken"
+# 執行 KVM 模式時，程式會停在這裡並存檔。
+echo "Boot complete. Creating checkpoint now..."
 /sbin/m5 checkpoint
 
-# 存檔完成後，讓虛擬機稍微休息一下再結束
-echo "Checkpoint done. Exiting..."
-sleep 1
+# -----------------------------------------------------------------------
+# 注意：當你之後使用 restore 指令 (詳細 CPU 模式) 時，程式會從下面這行繼續跑
+# -----------------------------------------------------------------------
+
+# 3. 重置統計數據 (Reset Stats)
+# 剛從 KVM 轉過來，我們要丟棄開機過程的雜訊數據。
+echo "Restored from checkpoint. Resetting stats..."
+/sbin/m5 resetstats
+
+# 4. 執行 Benchmark (ROI)
+# 這對應論文 [cite: 312]： "Accurate hardware simulation is employed during the execution of the ROI"
+echo "Starting Blackscholes ROI..."
+./blackscholes 1 input/in_4.txt prices.txt
+# 參數說明: 
+# 1: 執行緒數量 (根據你的測試需求調整)
+# input/in_4.txt: 輸入檔 (根據 simsmall, simlarge 等不同 input set 調整)
+
+# 5. 再次 Dump 數據並結束
+# 跑完 ROI 後，把這段期間的統計數據存下來 (m5 dumpstats)，然後退出。
+echo "Benchmark finished. Exiting..."
+/sbin/m5 dumpstats
 /sbin/m5 exit

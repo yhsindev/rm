@@ -41,17 +41,22 @@ def build_system(options):
     #--- TO-DO：預設給 3GB，如果 Disk Image 比較大，可能要改 4GB 或 8GB ---#
     system.mem_ranges = [AddrRange('3GB')] # 若跑大型 Benchmark 建議改 4GB 或 8GB
 
-    # 2. 設定 CPU: 初始階段使用 KVM CPU (快速)
+    # 2. 建立記憶體匯流排（需要在 CPU 之前建立）
+    system.membus = SystemXBar()       # System Memory Bus
+    system.l3bus = L2XBar()            # Shared L3 Bus (連接所有 Private L2 到 Shared L3)
+    
+    # 3. 設定 Workload（需要在 CPU 之前設定）
+    system.workload = X86FsLinux()
+    
+    # 4. 設定 CPU: 初始階段使用 KVM CPU (快速)
     if options.cpu_type == "kvm":
+        # KVM 需要 KvmVM
+        system.kvm_vm = KvmVM()
         system.cpu = [X86KvmCPU(cpu_id=i) for i in range(options.num_cpus)]
     else:
         system.cpu = [AtomicSimpleCPU(cpu_id=i) for i in range(options.num_cpus)]
 
-    # 3. 建立記憶體匯流排
-    system.membus = SystemXBar()       # System Memory Bus
-    system.l3bus = L2XBar()            # Shared L3 Bus (連接所有 Private L2 到 Shared L3)
-
-    # 4. --- [整合 SE Script] 建立 Shared L3 Cache (Racetrack Memory) ---
+    # 5. --- [整合 SE Script] 建立 Shared L3 Cache (Racetrack Memory) ---
     # 參數來源： SE Script (tag_latency=24, num_domains=64)
     if has_rm:
         system.l3cache = RacetrackCache(
@@ -75,6 +80,7 @@ def build_system(options):
 
     # 6. 為每個 CPU 建立 Private Cache Hierarchy
     for cpu in system.cpu:
+        cpu.createThreads()
         cpu.createInterruptController()
         
         # --- [整合 SE Script] 定義 Private L1/L2 ---
@@ -85,7 +91,9 @@ def build_system(options):
             assoc=4,
             tag_latency=2,
             data_latency=2,
-            response_latency=2
+            response_latency=2,
+            mshrs=4,
+            tgts_per_mshr=20
         )
         
         # L1 Data: SRAM (標準 Cache)
@@ -94,7 +102,9 @@ def build_system(options):
             assoc=4,
             tag_latency=2,
             data_latency=2,
-            response_latency=2
+            response_latency=2,
+            mshrs=4,
+            tgts_per_mshr=20
         )
 
         # L2 Cache: Private RacetrackCache
@@ -134,16 +144,32 @@ def build_system(options):
         cpu.interrupts[0].int_requestor = system.membus.cpu_side_ports
         cpu.interrupts[0].int_responder = system.membus.mem_side_ports
 
-    # 7. 連接 System Port 與 Memory Controller
+    # 7. 建立 IO Bus 和 Bridge
+    system.iobus = IOXBar()
+    
+    # 建立從 membus 到 iobus 的 bridge
+    # X86 地址空間常數
+    IO_address_space_base = 0x8000000000000000
+    pci_config_address_space_base = 0xC000000000000000
+    interrupts_address_space_base = 0xA000000000000000
+    
+    system.bridge = Bridge(delay="50ns")
+    system.bridge.mem_side_port = system.iobus.cpu_side_ports
+    system.bridge.cpu_side_port = system.membus.mem_side_ports
+    system.bridge.ranges = [
+        AddrRange(0xC0000000, 0xFFFF0000),  # PCI 設備記憶體映射
+        AddrRange(IO_address_space_base, interrupts_address_space_base - 1),  # IO 地址空間
+        AddrRange(pci_config_address_space_base, 0xFFFFFFFFFFFFFFFF),  # PCI 配置空間
+    ]
+    
+    # 8. 連接 System Port 與 Memory Controller
     system.system_port = system.membus.cpu_side_ports
     system.mem_ctrl = MemCtrl()
     system.mem_ctrl.dram = DDR3_1600_8x8()
     system.mem_ctrl.dram.range = system.mem_ranges[0]
     system.mem_ctrl.port = system.membus.mem_side_ports
 
-    # 8. 設定 Full System Workload
-    system.workload = X86FsLinux()
-    
+    # 9. 載入 Kernel 與 Disk Image
     # --- [修改：使用 Resource 自動下載 Kernel 與 Disk] ---
     print("正在自動檢查/下載 Kernel 與 Disk Image...")
     
@@ -166,14 +192,87 @@ def build_system(options):
         image_list = [disk_resource.get_local_path()]
     # ---
 
-    # 設定硬碟物件 
+    # 設定硬碟物件與平台裝置
     system.pc = Pc()
     system.pc.com_1.device = Terminal()
+    
     # 使用 RawDiskImage 取代 Image，並改參數名為 image_file
     system.pc.south_bridge.ide.disks = [IdeDisk(driveID='device0', image=RawDiskImage(image_file=img)) 
                                         for img in image_list]
-    # 設定開機參數 (這行一定要加，防止 mwait 崩潰！)
-    system.workload.command_line = "earlyprintk=ttyS0 console=ttyS0 lpj=7999923 root=/dev/sda2 idle=poll"
+    
+    # 建立 IO bus 到 memory bus 的橋接器 (用於 Local APIC 訪問)
+    system.apicbridge = Bridge(delay="50ns")
+    system.apicbridge.cpu_side_port = system.iobus.mem_side_ports
+    system.apicbridge.mem_side_port = system.membus.cpu_side_ports
+    # APIC 地址範圍：每個 CPU 佔用 4KB
+    system.apicbridge.ranges = [AddrRange(0xFEE00000, size=options.num_cpus * 0x1000)]
+    
+    # 連接 IO 裝置到 iobus
+    system.pc.attachIO(system.iobus)
+    
+    # 10. 設定 X86 必需的系統表 (SMBIOS, Intel MP, E820)
+    # 9.1 SMBIOS BIOS 資訊
+    structures = [X86SMBiosBiosInformation()]
+    system.workload.smbios_table.structures = structures
+    
+    # 9.2 Intel MP Table (多處理器表)
+    base_entries = []
+    ext_entries = []
+    for i in range(options.num_cpus):
+        bp = X86IntelMPProcessor(
+            local_apic_id=i,
+            local_apic_version=0x14,
+            enable=True,
+            bootstrap=(i == 0),
+        )
+        base_entries.append(bp)
+    
+    io_apic = X86IntelMPIOAPIC(
+        id=options.num_cpus, version=0x11, enable=True, address=0xFEC00000
+    )
+    system.pc.south_bridge.io_apic.apic_id = io_apic.id
+    base_entries.append(io_apic)
+    
+    pci_bus = X86IntelMPBus(bus_id=0, bus_type="PCI   ")
+    base_entries.append(pci_bus)
+    isa_bus = X86IntelMPBus(bus_id=1, bus_type="ISA   ")
+    base_entries.append(isa_bus)
+    
+    system.workload.intel_mp_table.base_entries = base_entries
+    system.workload.intel_mp_table.ext_entries = ext_entries
+    
+    # 9.3 E820 記憶體表 (告訴 Linux 記憶體佈局)
+    entries = [
+        # 標記第一個 MiB 的記憶體佈局
+        X86E820Entry(addr=0, size="639KiB", range_type=1),
+        X86E820Entry(addr=0x9FC00, size="385KiB", range_type=2),
+        # 標記剩餘的實體記憶體為可用
+        X86E820Entry(
+            addr=0x100000,
+            size="%dB" % (system.mem_ranges[0].size() - 0x100000),
+            range_type=1,
+        ),
+    ]
+    
+    # 如果記憶體小於 3GiB，標記 [mem_size, 3GiB) 為保留區
+    if len(system.mem_ranges) == 1:
+        entries.append(
+            X86E820Entry(
+                addr=system.mem_ranges[0].size(),
+                size="%dB" % (0xC0000000 - system.mem_ranges[0].size()),
+                range_type=2,
+            )
+        )
+    
+    # 保留最後 64KiB 給 m5op 介面
+    entries.append(X86E820Entry(addr=0xFFFF0000, size="64KiB", range_type=2))
+    
+    system.workload.e820_table.entries = entries
+    
+    # 設定開機參數
+    # idle=poll: 防止 mwait 崩潰
+    # noapic: 避免 IO-APIC timer 問題（gem5 KVM 常見問題）
+    system.workload.command_line = "earlyprintk=ttyS0 console=ttyS0 lpj=7999923 root=/dev/sda1 idle=poll noapic"
 
     if options.script:
         system.readfile = options.script
@@ -183,13 +282,15 @@ def build_system(options):
 def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kernel", type=str, 
-                        default="/home/usr/gem5_resources/vmlinux", 
+                        default="/home/usr/rm/gem5_resources/vmlinux", 
                         help="Path to vmlinux")
                         
     parser.add_argument("--disk-image", type=str, 
-                        default=None, 
+                        default="/home/usr/rm/gem5_resources/ubuntu.img", 
                         help="Path to disk image")
-    parser.add_argument("--script", type=str, default="", help="Path to .rcS script")
+    parser.add_argument("--script", type=str, 
+                        default="/home/usr/rm/gem5/configs/boot/boot.rcS", 
+                        help="Path to .rcS script")
     parser.add_argument("--num-cpus", type=int, default=1)
     parser.add_argument("--l3-size", type=str, default="16MB")
     parser.add_argument("--cpu-type", type=str, default="kvm", choices=["kvm", "atomic"])
