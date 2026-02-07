@@ -15,9 +15,7 @@ name: Workflow Scheduler
 # other workflows.
 
 on:
-    schedule:
-    # Runs every hour, 30 minutes past the hour.
-        - cron: 30 * * * *
+  workflow_dispatch:
 
 env:
   # This is the token used to authenticate with GitHub.
